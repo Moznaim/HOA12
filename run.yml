@@ -1,0 +1,111 @@
+---
+- name: System Hardening Playbook
+  hosts: all
+  become: yes
+
+  vars:
+    allowed_ssh_networks:
+      - 192.168.56.118
+      - 192.168.56.112
+    remove_packages:
+      - telnet
+      - rsh
+    disable_services:
+      - avahi-daemon
+      - cups
+
+  tasks:
+
+    - name: Fully patch system
+      ansible.builtin.package:
+        name: "*"
+        state: latest
+
+    - name: "Create admin group"
+      group:
+        name: admin
+        state: present
+
+    - name: Create admin user
+      user:
+        name: admin
+        group: admin
+        shell: /bin/bash
+        create_home: yes
+
+    - name: Add SSH key for admin
+      authorized_key:
+        user: admin
+        state: present
+        key: "{{ lookup('file', '~/.ssh/id_rsa.pub') }}"
+
+    - name: Add sudoers file for admin
+      copy:
+        dest: /etc/sudoers.d/admin
+        content: "admin ALL=(ALL) NOPASSWD:ALL"
+        mode: '0440'
+
+    - name: Disable root SSH login and password auth
+      copy:
+        src: sshd_config
+        dest: /etc/ssh/sshd_config
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart sshd
+
+    - name: Move SSH to internal firewalld zone
+      firewalld:
+        service: ssh
+        zone: internal
+        permanent: yes
+        immediate: yes
+        state: enabled
+
+    - name: Allow networks for SSH
+      firewalld:
+        zone: internal
+        source: "{{ item }}"
+        state: enabled
+        permanent: yes
+        immediate: yes
+      with_items: "{{ allowed_ssh_networks }}"
+
+    - name: Remove unused packages
+      package:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ remove_packages }}"
+
+    - name: Disable unnecessary services
+      service:
+        name: "{{ item }}"
+        enabled: no
+        state: stopped
+      loop: "{{ disable_services }}"
+
+    - name: Set login banner
+      copy:
+        content: "Authorized access only. All activity may be monitored and reported."
+        dest: /etc/issue
+
+    - name: Set MOTD
+      copy:
+        content: "Welcome to this system. Use is monitored."
+        dest: /etc/motd
+
+
+    - name: Deploy secure sshd_config
+      copy:
+        src: sshd_config
+        dest: /etc/ssh/sshd_config
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Restart sshd
+
+  handlers:
+    - name: Restart sshd
+      service:
+        name: sshd
+        state: restarted
